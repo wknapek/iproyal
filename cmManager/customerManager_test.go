@@ -73,7 +73,7 @@ func TestAllowanceIsEnforced(t *testing.T) {
 func TestExhaustionIsDistinctFromBadToken(t *testing.T) {
 	cm := NewCustomerManager()
 	c, _ := cm.CreateCustomer("acme")
-	for i := uint(0); i < MaxRequests; i++ {
+	for range uint(MaxRequests) {
 		cm.Acquire(c.ID)
 		cm.Release(c.ID, true)
 	}

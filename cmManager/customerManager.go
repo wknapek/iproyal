@@ -39,8 +39,8 @@ type Customer struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 
-	noRequests uint `json:"-"`
-	inFlight   int  `json:"-"`
+	noRequests uint
+	inFlight   int
 }
 
 // Balance reports the customer's unused requests. Exported because the create-user
