@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -29,12 +30,27 @@ func newTestHandler(t *testing.T) (*Handler, *cmManager.CustomerManager, *gin.En
 	return h, cm, r
 }
 
-// allowLoopbackTarget lets the tests use a local httptest server, which the real
-// SSRF guard would reject as a private address.
+// allowLoopbackTarget points the handler at a local server. The real guard rejects
+// loopback twice over, in ValidateTarget and again in the dialer, so both are
+// relaxed here: validation is replaced with the scheme-and-host checks only, and
+// the client is built with private targets permitted. Production code paths are
+// untouched.
 func allowLoopbackTarget(t *testing.T) {
 	t.Helper()
 	origValidate, origClient := validateTarget, newFetchClient
-	validateTarget = scraper.ValidateTarget
+	validateTarget = func(raw string) (*url.URL, error) {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, errors.New("malformed url")
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return nil, errors.New("only http and https urls are allowed")
+		}
+		if u.Hostname() == "" {
+			return nil, errors.New("url is missing a host")
+		}
+		return u, nil
+	}
 	newFetchClient = func() *http.Client { return scraper.NewFetchClientFor(true) }
 	t.Cleanup(func() { validateTarget, newFetchClient = origValidate, origClient })
 }
@@ -155,8 +171,8 @@ func TestScrapeBlocksPrivateTargets(t *testing.T) {
 	}
 
 	// A rejected target must not have touched the balance.
-	if got := remaining(t, cm, token); got != cmManager.INITCUSTREQ {
-		t.Errorf("blocked targets consumed allowance: %d left, want %d", got, cmManager.INITCUSTREQ)
+	if got := remaining(t, cm, token); got != cmManager.MaxRequests {
+		t.Errorf("blocked targets consumed allowance: %d left, want %d", got, cmManager.MaxRequests)
 	}
 }
 
@@ -174,8 +190,8 @@ func TestValidationFailuresDoNotConsumeAllowance(t *testing.T) {
 		}
 	}
 
-	if got := remaining(t, cm, token); got != cmManager.INITCUSTREQ {
-		t.Errorf("invalid requests consumed allowance: %d left, want %d", got, cmManager.INITCUSTREQ)
+	if got := remaining(t, cm, token); got != cmManager.MaxRequests {
+		t.Errorf("invalid requests consumed allowance: %d left, want %d", got, cmManager.MaxRequests)
 	}
 }
 
@@ -194,11 +210,11 @@ func TestPerCustomerAllowanceEndToEnd(t *testing.T) {
 	if rec := scrapeURL(t, r, "url="+url.QueryEscape(srv.URL)+"&format=html&token="+acme); rec.Code != http.StatusOK {
 		t.Fatalf("scrape: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	if got := remaining(t, cm, acme); got != cmManager.INITCUSTREQ-1 {
-		t.Errorf("acme balance: %d, want %d", got, cmManager.INITCUSTREQ-1)
+	if got := remaining(t, cm, acme); got != cmManager.MaxRequests-1 {
+		t.Errorf("acme balance: %d, want %d", got, cmManager.MaxRequests-1)
 	}
-	if got := remaining(t, cm, other); got != cmManager.INITCUSTREQ {
-		t.Errorf("other balance changed: %d, want %d", got, cmManager.INITCUSTREQ)
+	if got := remaining(t, cm, other); got != cmManager.MaxRequests {
+		t.Errorf("other balance changed: %d, want %d", got, cmManager.MaxRequests)
 	}
 }
 
@@ -218,12 +234,12 @@ func TestSuccessfulScrapeIsCharged(t *testing.T) {
 			t.Fatalf("scrape %d: status %d, body %s", i, rec.Code, rec.Body.String())
 		}
 	}
-	if got, want := remaining(t, cm, token), uint(cmManager.INITCUSTREQ-3); got != want {
+	if got, want := remaining(t, cm, token), uint(cmManager.MaxRequests-3); got != want {
 		t.Errorf("balance after 3 scrapes: %d, want %d", got, want)
 	}
 
 	// Draining the balance must produce 402, and stay there.
-	for i := uint(0); i < cmManager.INITCUSTREQ-3; i++ {
+	for i := uint(0); i < cmManager.MaxRequests-3; i++ {
 		if rec := scrapeURL(t, r, q); rec.Code != http.StatusOK {
 			t.Fatalf("drain %d: status %d", i, rec.Code)
 		}
@@ -250,8 +266,8 @@ func TestFailedScrapeIsRefunded(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("fetch failure: status %d, want %d", rec.Code, http.StatusBadGateway)
 	}
-	if got := remaining(t, cm, token); got != cmManager.INITCUSTREQ {
-		t.Errorf("failed scrape was charged: %d left, want %d", got, cmManager.INITCUSTREQ)
+	if got := remaining(t, cm, token); got != cmManager.MaxRequests {
+		t.Errorf("failed scrape was charged: %d left, want %d", got, cmManager.MaxRequests)
 	}
 
 	// A slot must be freed by the failure too, or the customer would be capped
@@ -277,7 +293,7 @@ func TestTimeoutScrapeIsRefunded(t *testing.T) {
 
 	_, cm, r := newTestHandler(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(2 * time.Second)
+		time.Sleep(300 * time.Millisecond)
 	}))
 	defer srv.Close()
 
@@ -286,8 +302,8 @@ func TestTimeoutScrapeIsRefunded(t *testing.T) {
 	if rec.Code != http.StatusGatewayTimeout {
 		t.Fatalf("timeout: status %d, want %d", rec.Code, http.StatusGatewayTimeout)
 	}
-	if got := remaining(t, cm, token); got != cmManager.INITCUSTREQ {
-		t.Errorf("timeout was charged: %d left, want %d", got, cmManager.INITCUSTREQ)
+	if got := remaining(t, cm, token); got != cmManager.MaxRequests {
+		t.Errorf("timeout was charged: %d left, want %d", got, cmManager.MaxRequests)
 	}
 }
 
@@ -296,10 +312,15 @@ func TestInFlightCapIsReportedAs429(t *testing.T) {
 	_, _, r := newTestHandler(t)
 
 	release := make(chan struct{})
-	var started sync.WaitGroup
-	started.Add(cmManager.MaxInFlight)
+	// A buffered channel rather than a WaitGroup: the server is reused for the
+	// follow-up requests below, so the handler can legitimately be entered more
+	// than MaxInFlight times in total.
+	started := make(chan struct{}, cmManager.MaxInFlight)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		started.Done()
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		<-release
 		w.Write([]byte("slow"))
 	}))
@@ -317,7 +338,9 @@ func TestInFlightCapIsReportedAs429(t *testing.T) {
 			codes <- scrapeURL(t, r, q).Code
 		}()
 	}
-	started.Wait()
+	for i := 0; i < cmManager.MaxInFlight; i++ {
+		<-started
+	}
 
 	// The next request is over the cap: 429 with a retry hint, not 402.
 	rec := scrapeURL(t, r, q)
@@ -357,7 +380,7 @@ func TestConcurrentBurstNeverOverspends(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	var ok, limited, refused int64
+	var ok, limited, refused, other int64
 	var wg sync.WaitGroup
 	for i := 0; i < 40; i++ {
 		wg.Add(1)
@@ -370,16 +393,24 @@ func TestConcurrentBurstNeverOverspends(t *testing.T) {
 				atomic.AddInt64(&limited, 1)
 			case http.StatusPaymentRequired:
 				atomic.AddInt64(&refused, 1)
+			default:
+				atomic.AddInt64(&other, 1)
 			}
 		}()
 	}
 	wg.Wait()
 
-	if got := remaining(t, cm, seeded.ID); got != 0 {
-		t.Errorf("balance after burst: %d, want 0", got)
+	// Every success costs exactly one unit and nothing else does. The balance is
+	// not necessarily zero at the end: requests refused with 429 or 402 were
+	// turned away without charging, so a burst can end with credit left over.
+	if got, want := remaining(t, cm, seeded.ID), uint(5)-uint(ok); got != want {
+		t.Errorf("balance after burst: %d, want %d (%d successes on a balance of 5)", got, want, ok)
 	}
 	if ok > 5 {
 		t.Errorf("served %d scrapes on a balance of 5", ok)
+	}
+	if other != 0 {
+		t.Errorf("%d requests returned an unexpected status", other)
 	}
 	if ok+limited+refused != 40 {
 		t.Errorf("unaccounted responses: %d ok, %d limited, %d refused", ok, limited, refused)
@@ -408,8 +439,8 @@ func TestRefillIsAdminOnlyAndNotImplemented(t *testing.T) {
 	}
 
 	// A stub that reported success would be worse than one that refuses.
-	if got := remaining(t, cm, token); got != cmManager.INITCUSTREQ {
-		t.Errorf("refill stub changed the balance: %d, want %d", got, cmManager.INITCUSTREQ)
+	if got := remaining(t, cm, token); got != cmManager.MaxRequests {
+		t.Errorf("refill stub changed the balance: %d, want %d", got, cmManager.MaxRequests)
 	}
 }
 

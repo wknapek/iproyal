@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"ipRoyal/cmManager"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -200,5 +201,52 @@ func TestRejectedScrapeReleasesNothing(t *testing.T) {
 	}
 	if rem, _ := cm.Remaining("reject-token"); rem != 100 {
 		t.Fatalf("remaining = %d, want 100", rem)
+	}
+}
+
+// The guard is the SSRF boundary, so every range that could reach internal
+// infrastructure or the cloud metadata service has to be rejected.
+func TestIsPublicIP(t *testing.T) {
+	blocked := []string{
+		"127.0.0.1", "127.1.2.3", // loopback
+		"10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.1.1", // private
+		"169.254.169.254",    // link local, AWS/GCP metadata
+		"0.0.0.0", "0.1.2.3", // unspecified and 0.0.0.0/8
+		"224.0.0.1", "ff02::1", // multicast
+		"::1", "fe80::1", "::",
+	}
+	for _, s := range blocked {
+		if IsPublicIP(net.ParseIP(s)) {
+			t.Errorf("IsPublicIP(%s) = true, want false", s)
+		}
+	}
+
+	allowed := []string{"1.1.1.1", "8.8.8.8", "93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"}
+	for _, s := range allowed {
+		if !IsPublicIP(net.ParseIP(s)) {
+			t.Errorf("IsPublicIP(%s) = false, want true", s)
+		}
+	}
+
+	if IsPublicIP(nil) {
+		t.Error("IsPublicIP(nil) = true, want false")
+	}
+}
+
+func TestIsTimeout(t *testing.T) {
+	// A context deadline is the timeout signal the handler relies on to
+	// distinguish 504 from 502.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	<-ctx.Done()
+
+	if !IsTimeout(ctx.Err()) {
+		t.Error("IsTimeout(context.DeadlineExceeded) = false, want true")
+	}
+	if IsTimeout(errors.New("connection refused")) {
+		t.Error("IsTimeout(plain error) = true, want false")
+	}
+	if IsTimeout(nil) {
+		t.Error("IsTimeout(nil) = true, want false")
 	}
 }

@@ -1,3 +1,11 @@
-/auth.7z
-/.idea
+# Build output
 /ipRoyal
+
+# Local env / secrets
+.env
+
+# Editor and OS noise
+.idea/
+*.swp
+.DS_Store
+/auth.7z

@@ -11,7 +11,12 @@ import (
 )
 
 const (
-	INITCUSTREQ = 100
+	// MaxRequests is both a new customer's starting balance and the hard ceiling
+	// on what any customer may hold. Collapsing the two means there is no
+	// separate top-up target to reason about: a customer simply cannot be given
+	// more than a fresh one starts with, so a balance can never exceed MaxRequests
+	// and refunding can never push one past it.
+	MaxRequests = 100
 
 	// MaxInFlight caps how many scrapes one customer may have outstanding at
 	// once. Without it a single customer with a large balance could occupy every
@@ -42,10 +47,6 @@ type Customer struct {
 // response reports the starting balance.
 func (c Customer) Balance() uint { return c.noRequests }
 
-// MaxRequests is the ceiling a customer may be topped up to, independent of the
-// balance they were created with.
-const MaxRequests = 1000
-
 type CustomerManager struct {
 	mu          sync.Mutex
 	byTokenHash map[[sha256.Size]byte]*Customer
@@ -64,17 +65,20 @@ func newToken() (string, error) {
 }
 
 // CreateCustomer registers a customer under its freshly generated token, which
-// becomes the customer's ID. The token is returned once and never stored.
+// becomes the customer's ID. The token is returned once and never stored. A new
+// customer starts with a full MaxRequests allowance.
 func (cm *CustomerManager) CreateCustomer(name string) (Customer, error) {
 	token, err := newToken()
 	if err != nil {
 		return Customer{}, err
 	}
-	return cm.register(name, token)
+	return cm.register(name, token, MaxRequests)
 }
 
 // SeedDemoCustomer inserts a customer with a caller-supplied token and balance,
-// so the service comes up with a usable account instead of an empty store.
+// so the service comes up with a usable account instead of an empty store. A
+// balance is only useful for starting below MaxRequests, typically to make the
+// demo cheap to exhaust.
 //
 // The token is not generated, so it must come from a secret source. The caller is
 // responsible for that; SeedDemoCustomer is a bootstrap aid, not a way to mint
@@ -83,16 +87,15 @@ func (cm *CustomerManager) SeedDemoCustomer(name, token string, balance uint) (C
 	return cm.register(name, token, balance)
 }
 
-func (cm *CustomerManager) register(name, token string, balance ...uint) (Customer, error) {
+// register inserts a customer under an explicit token, starting with the given
+// number of requests. A balance above MaxRequests is rejected, so the ceiling
+// holds from the moment the account exists rather than only after a top-up.
+func (cm *CustomerManager) register(name, token string, requests uint) (Customer, error) {
 	if token == "" {
 		return Customer{}, errors.New("token must not be empty")
 	}
-	requests := uint(INITCUSTREQ)
-	if len(balance) > 0 {
-		if balance[0] > MaxRequests {
-			return Customer{}, fmt.Errorf("balance %d exceeds the maximum of %d", balance[0], MaxRequests)
-		}
-		requests = balance[0]
+	if requests > MaxRequests {
+		return Customer{}, fmt.Errorf("balance %d exceeds the maximum of %d", requests, MaxRequests)
 	}
 
 	sum := sha256.Sum256([]byte(token))

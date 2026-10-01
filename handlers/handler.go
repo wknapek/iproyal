@@ -43,9 +43,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 // TODO: not implemented yet. Decide and settle the following before wiring it to
 // the store:
 //   - body shape: absolute ("set to N") versus additive ("add N"), and whether
-//     an empty body means "reset to INITCUSTREQ";
-//   - whether the ceiling is INITCUSTREQ or cmManager.MaxRequests, and whether
-//     an exhausted customer may be topped back up at all;
+//     an empty body means "reset to the full allowance";
+//   - whether an exhausted customer may be topped back up at all, given that
+//     cmManager.MaxRequests is both the starting balance and the hard ceiling,
+//     so any top-up is capped at exactly what a fresh customer would hold;
 //   - whether a refill is audited, and by which caller identity.
 //
 // Until then this returns 501 rather than a silent success, so a client cannot

@@ -12,8 +12,8 @@ func TestAllowanceStartsAtInitCustReq(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateCustomer: %v", err)
 	}
-	if c.noRequests != INITCUSTREQ {
-		t.Fatalf("noRequests = %d, want %d", c.noRequests, INITCUSTREQ)
+	if c.noRequests != MaxRequests {
+		t.Fatalf("noRequests = %d, want %d", c.noRequests, MaxRequests)
 	}
 	if c.ID == "" {
 		t.Fatal("customer ID is empty")
@@ -53,12 +53,12 @@ func TestAllowanceIsEnforced(t *testing.T) {
 		t.Fatalf("CreateCustomer: %v", err)
 	}
 
-	for i := uint(0); i < INITCUSTREQ; i++ {
+	for i := uint(0); i < MaxRequests; i++ {
 		_, rem, err := cm.Acquire(c.ID)
 		if err != nil {
 			t.Fatalf("request %d rejected (%v), allowance should still have room", i+1, err)
 		}
-		if want := INITCUSTREQ - i - 1; rem != want {
+		if want := MaxRequests - i - 1; rem != want {
 			t.Fatalf("request %d: remaining = %d, want %d", i+1, rem, want)
 		}
 		// Release immediately so this test isolates the balance limit rather than
@@ -66,14 +66,14 @@ func TestAllowanceIsEnforced(t *testing.T) {
 		cm.Release(c.ID, true)
 	}
 	if _, _, err := cm.Acquire(c.ID); !errors.Is(err, ErrNoRequests) {
-		t.Fatalf("request %d: err = %v, want ErrNoRequests", INITCUSTREQ+1, err)
+		t.Fatalf("request %d: err = %v, want ErrNoRequests", MaxRequests+1, err)
 	}
 }
 
 func TestExhaustionIsDistinctFromBadToken(t *testing.T) {
 	cm := NewCustomerManager()
 	c, _ := cm.CreateCustomer("acme")
-	for i := uint(0); i < INITCUSTREQ; i++ {
+	for i := uint(0); i < MaxRequests; i++ {
 		cm.Acquire(c.ID)
 		cm.Release(c.ID, true)
 	}
@@ -90,7 +90,7 @@ func TestAllowanceIsPerCustomer(t *testing.T) {
 	a, _ := cm.CreateCustomer("a")
 	b, _ := cm.CreateCustomer("b")
 
-	for i := uint(0); i < INITCUSTREQ; i++ {
+	for i := uint(0); i < MaxRequests; i++ {
 		cm.Acquire(a.ID)
 		cm.Release(a.ID, true)
 	}
@@ -180,12 +180,12 @@ func TestRefundRestoresReservedRequest(t *testing.T) {
 	}
 
 	cm.Acquire(c.ID)
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ-1 {
-		t.Fatalf("after acquire: remaining = %d, want %d", rem, INITCUSTREQ-1)
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests-1 {
+		t.Fatalf("after acquire: remaining = %d, want %d", rem, MaxRequests-1)
 	}
 	cm.Release(c.ID, false)
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ {
-		t.Fatalf("after failed release: remaining = %d, want %d", rem, INITCUSTREQ)
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests {
+		t.Fatalf("after failed release: remaining = %d, want %d", rem, MaxRequests)
 	}
 }
 
@@ -196,8 +196,8 @@ func TestSuccessfulReleaseKeepsTheCharge(t *testing.T) {
 
 	cm.Acquire(c.ID)
 	cm.Release(c.ID, true)
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ-1 {
-		t.Fatalf("remaining = %d, want %d: a successful scrape must stay charged", rem, INITCUSTREQ-1)
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests-1 {
+		t.Fatalf("remaining = %d, want %d: a successful scrape must stay charged", rem, MaxRequests-1)
 	}
 }
 
@@ -208,15 +208,15 @@ func TestReleaseCannotInflateBalance(t *testing.T) {
 
 	cm.Release(c.ID, false)
 	cm.Release(c.ID, false)
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ {
-		t.Fatalf("remaining = %d, want %d: release with no acquire inflated the balance", rem, INITCUSTREQ)
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests {
+		t.Fatalf("remaining = %d, want %d: release with no acquire inflated the balance", rem, MaxRequests)
 	}
 
 	cm.Acquire(c.ID)
 	cm.Release(c.ID, false)
 	cm.Release(c.ID, false)
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ {
-		t.Fatalf("remaining = %d, want %d: duplicate release inflated the balance", rem, INITCUSTREQ)
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests {
+		t.Fatalf("remaining = %d, want %d: duplicate release inflated the balance", rem, MaxRequests)
 	}
 }
 
@@ -237,8 +237,8 @@ func TestRepeatedFailedScrapesAreBalanceNeutral(t *testing.T) {
 		}
 		cm.Release(c.ID, false)
 	}
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ {
-		t.Fatalf("remaining = %d, want %d", rem, INITCUSTREQ)
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests {
+		t.Fatalf("remaining = %d, want %d", rem, MaxRequests)
 	}
 }
 
@@ -260,9 +260,9 @@ func TestOnlySuccessfulScrapesAreCharged(t *testing.T) {
 		}
 		cm.Release(c.ID, true)
 	}
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ-successes {
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests-successes {
 		t.Fatalf("remaining = %d, want %d: only %d successes should be charged",
-			rem, INITCUSTREQ-successes, successes)
+			rem, MaxRequests-successes, successes)
 	}
 }
 
@@ -295,8 +295,8 @@ func TestConcurrentAcquireReleaseStaysWithinLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Remaining: %v", err)
 	}
-	if rem > INITCUSTREQ {
-		t.Fatalf("remaining = %d, must never exceed %d", rem, INITCUSTREQ)
+	if rem > MaxRequests {
+		t.Fatalf("remaining = %d, must never exceed %d", rem, MaxRequests)
 	}
 }
 
@@ -318,8 +318,8 @@ func TestInFlightCapIsEnforced(t *testing.T) {
 	}
 
 	// A rejected over-cap request must not have touched the balance.
-	if rem, _ := cm.Remaining(c.ID); rem != INITCUSTREQ-MaxInFlight {
-		t.Fatalf("remaining = %d, want %d: over-cap rejection consumed balance", rem, INITCUSTREQ-MaxInFlight)
+	if rem, _ := cm.Remaining(c.ID); rem != MaxRequests-MaxInFlight {
+		t.Fatalf("remaining = %d, want %d: over-cap rejection consumed balance", rem, MaxRequests-MaxInFlight)
 	}
 }
 

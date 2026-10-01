@@ -15,7 +15,7 @@ The service seeds a demo customer on startup when `DEMO_TOKEN` is set, so it is 
 ```bash
 export ADMIN_TOKEN=your_admin_token
 export DEMO_TOKEN=demo_abc123      # any value you choose; this is the demo customer's token
-export DEMO_BALANCE=100            # optional, defaults to INITCUSTREQ (100)
+export DEMO_BALANCE=100            # optional, defaults to MaxRequests (100)
 go run .
 ```
 
@@ -59,7 +59,7 @@ Note that a token in the query string lands in access logs, browser history, and
 
 ## Prepaid balance
 
-Each customer starts with `INITCUSTREQ` (100) requests. `noRequests` drops by one for every scrape that **succeeds**.
+Each customer starts with `MaxRequests` (100) requests, which is also the hard ceiling. `noRequests` drops by one for every scrape that **succeeds**.
 
 `CustomerManager.Acquire` takes one unit and one in-flight slot atomically before the fetch; `CustomerManager.Release` frees the slot and refunds the unit when the scrape failed. The net effect is charge-per-success, while both limits stay hard under concurrency.
 
@@ -130,8 +130,8 @@ The `id` **is** the customer's token, so there is nothing else to store.
 
 `POST /v1/users/:id/refill` is stubbed and returns `501 Not Implemented`. It never touches the balance, so it is safe to leave in place while the design is settled. Open questions recorded in `handlers/handler.go`:
 
-- body shape: absolute (`set to N`) versus additive (`add N`), and whether an empty body means `reset to INITCUSTREQ`;
-- whether the ceiling is `INITCUSTREQ` or the separate `maxRequests` (1000) already defined, and whether an exhausted customer may be topped back up at all;
+- body shape: absolute (`set to N`) versus additive (`add N`), and whether an empty body means `reset to the full allowance`;
+- whether an exhausted customer may be topped back up at all, given that `MaxRequests` is both the starting balance and the ceiling, so any top-up is capped at exactly what a fresh customer holds;
 - whether refills are audited, and which caller identity is recorded.
 
 ## Configuration
@@ -143,7 +143,21 @@ The `id` **is** the customer's token, so there is nothing else to store.
 | `DEMO_BALANCE`      | Starting balance for the demo customer | `100` |
 | `ADDR`              | Listen address | `:8080` |
 
-Compile-time constants in `cmManager/customerManager.go` and `scraper/scrape.go`: `INITCUSTREQ` (100), `maxInFlight` (4), `maxRequests` (1000), `fetchTimeout` (15s), `maxBodyBytes` (5MB).
+Compile-time constants: `MaxRequests` (100, both the starting balance and the hard ceiling) and `MaxInFlight` (4) in `cmManager/customerManager.go`, `FetchTimeout` (15s) and `MaxBodyBytes` (5MB) in `scraper/scrape.go`.
+
+## Package layout
+
+| Package | Responsibility |
+|---------|----------------|
+| `main` | Wiring only: config, demo seed, route registration, listener. No business logic. |
+| `auth` | Admin bearer-token middleware and required-env lookup. |
+| `cmManager` | Customer store, token generation and lookup by hash, balances, in-flight slots, `Acquire`/`Release`. No HTTP knowledge. |
+| `scraper` | Outbound fetch: target validation, SSRF guard, bounded client, body cap, timeout. No customer knowledge. |
+| `handlers` | HTTP surface. Glues the three above and owns request/response shapes. |
+
+The dependency direction is one way: `main` → `handlers` → {`auth`, `cmManager`, `scraper`}. `cmManager` and `scraper` know nothing about HTTP or about each other, which is what keeps their tests runnable without a server.
+
+`handlers.validateTarget` and `handlers.newFetchClient` are indirections over the `scraper` package. The serving path always uses the real ones; the tests swap them out to reach a loopback `httptest` server that the SSRF guard would otherwise reject.
 
 ## Limitations
 

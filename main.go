@@ -43,7 +43,7 @@ func seedDemoCustomer(cm *cmManager.CustomerManager) {
 		return
 	}
 
-	balance := uint(cmManager.INITCUSTREQ)
+	balance := uint(cmManager.MaxRequests)
 	if raw := os.Getenv("DEMO_BALANCE"); raw != "" {
 		parsed, err := strconv.ParseUint(raw, 10, 32)
 		if err != nil {
